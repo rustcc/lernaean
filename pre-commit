@@ -1,0 +1,8 @@
+#!/bin/bash
+# After clone this project, copy this file to {ProjectDir}/.git/hooks/pre-commit
+
+set -e
+cargo clippy -- -D warnings
+cargo +nightly fmt --all -- --check
+cargo test --verbose --all
+set +e

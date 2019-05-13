@@ -1,0 +1,7 @@
+[package]
+name = "Lernaean"
+version = "0.1.0"
+authors = ["DCjanus <dcjanus@dcjanus.com>"]
+edition = "2018"
+
+[dependencies]

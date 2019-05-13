@@ -1,0 +1,7 @@
+# Rust or Cargo
+/target
+**/*.rs.bk
+
+# IDE or Editor
+.idea/
+.vscode/
