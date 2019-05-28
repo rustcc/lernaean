@@ -1,7 +1,28 @@
 [package]
-name = "Lernaean"
+name = "lernaean"
 version = "0.1.0"
 authors = ["DCjanus <dcjanus@dcjanus.com>"]
 edition = "2018"
 
 [dependencies]
+flexi_logger = "0.12.0"
+log = "0.4.6"
+chrono = "0.4.6"
+failure = "0.1.5"
+lazy_static = "1.3.0"
+futures-preview = { version = "0.3.0-alpha.16", features = ["compat"] }
+serde = { version = "1.0.91", features = ["derive"] }
+serde_json = "1.0.39"
+file = "1.1.2"
+structopt = "0.2.15"
+http-service = "0.2.0"
+http = "0.1.17"
+tide = "0.2.0"
+sled = "0.24.1"
+openssl = "0.10.23"
+hex = "0.3.2"
+crossbeam-channel = "0.3.8"
+reqwest = "0.9.17"
+lru = "0.1.15"
+tokio-fs = "0.1.6"
+hex-serde = "0.1.0"
