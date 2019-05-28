@@ -1,6 +1,54 @@
-use crate::{errors::GenResult, utils::CommandExt, GLOBAL_CONFIG};
+use crate::{
+    crates::{CrateIdentity, CrateMetadata},
+    errors::GenResult,
+    magic::INDEX_QUERY_CACHE_SIZE,
+    utils::CommandExt,
+    GLOBAL_CONFIG,
+};
+use futures::{compat::Compat01As03, lock::Mutex};
 use http::Uri;
+use lru::LruCache;
 use std::{path::Path, process::Command, time::Duration};
+
+lazy_static! {
+    static ref CRATE_CACHE: Mutex<LruCache<CrateIdentity, [u8; 32]>> =
+        Mutex::new(LruCache::new(INDEX_QUERY_CACHE_SIZE));
+}
+
+#[allow(clippy::needless_lifetimes)] // see: https://github.com/rust-lang/rust-clippy/issues/3988
+pub async fn query(ident: &CrateIdentity) -> GenResult<Option<[u8; 32]>> {
+    if let Some(checksum) = CRATE_CACHE.lock().await.get(ident) {
+        return Ok(Some(*checksum));
+    }
+
+    let rel_path = match ident.name.len() {
+        0 => unreachable!(),
+        1 => format!("1/{}", ident.name),
+        2 => format!("2/{}", ident.name),
+        3 => format!("3/{}/{}", &ident.name[..1], ident.name),
+        _ => format!("{}/{}/{}", &ident.name[..2], &ident.name[2..4], ident.name),
+    };
+    let full_path = GLOBAL_CONFIG.index.join(rel_path);
+    let content: Vec<u8> = Compat01As03::new(tokio_fs::read(full_path)).await?;
+    let text = String::from_utf8(content)?;
+
+    for line in text.lines() {
+        let meta = serde_json::from_str::<CrateMetadata>(line)?;
+        debug_assert_eq!(ident.name, meta.name);
+        if meta.version == ident.version {
+            CRATE_CACHE
+                .lock()
+                .await
+                .put(ident.to_owned(), meta.checksum);
+            return Ok(Some(meta.checksum));
+        }
+    }
+    Err(format_err!(
+        "no such crate found: {}-{}",
+        ident.name,
+        ident.version
+    ))
+}
 
 pub fn init() -> GenResult<()> {
     let crate::Config {
@@ -14,8 +62,10 @@ pub fn init() -> GenResult<()> {
     init_index(index, upstream, origin, dl)?;
 
     std::thread::spawn(move || loop {
-        if let Err(error) = pull_from_upstream(index).and_then(move |_| push_to_origin(index)) {
-            error!("update index failed: {:?}", error);
+        if let Err(error) = pull_from_upstream(index) {
+            error!("pull index failed: {:?}", error);
+        } else if let Err(error) = push_to_origin(index) {
+            error!("push index failed: {:?}", error);
         } else {
             info!("update index succeeded");
         }
@@ -25,7 +75,7 @@ pub fn init() -> GenResult<()> {
     Ok(())
 }
 
-fn init_index(index: &Path, upstream: &Uri, origin: &Uri, dl: &Uri) -> GenResult<()> {
+fn init_index(index: &Path, upstream: &str, origin: &str, dl: &Uri) -> GenResult<()> {
     if index.join(".git").exists() {
         return Ok(());
     }

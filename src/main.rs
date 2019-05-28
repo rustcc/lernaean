@@ -4,15 +4,24 @@
 extern crate lazy_static;
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate failure;
 
-use crate::errors::GenResult;
+use crate::{
+    cache::fetch_cache,
+    crates::{CrateIdentity, CrateMetadata},
+    errors::GenResult,
+};
 use http::{header, StatusCode, Uri};
 use std::{net::SocketAddr, path::PathBuf};
 use structopt::StructOpt;
-use tide::{error::ResultExt, middleware::RootLogger, EndpointResult};
+use tide::{error::ResultExt, middleware::RootLogger, response::IntoResponse, EndpointResult};
 
+pub mod cache;
+pub mod crates;
 pub mod errors;
 pub mod index;
+pub mod magic;
 pub mod utils;
 
 lazy_static! {
@@ -26,20 +35,24 @@ lazy_static! {
 )]
 pub struct Config {
     /// Crates.io local index path
-    #[structopt(long, value_name = "path", default_value = "./cache")]
+    #[structopt(long, value_name = "path", default_value = "./cache/crates.io-index")]
     pub index: PathBuf,
+
+    /// Crates local cache path
+    #[structopt(long, value_name = "path", default_value = "./cache/crates.sled")]
+    pub files: PathBuf,
 
     /// Upstream index url
     #[structopt(
         long,
-        value_name = "url",
+        value_name = "uri",
         default_value = "https://github.com/rust-lang/crates.io-index.git"
     )]
-    pub upstream: Uri,
+    pub upstream: String,
 
     /// Downstream index url
     #[structopt(long, value_name = "uri")]
-    pub origin: Uri,
+    pub origin: String,
 
     /// Config.json 'dl' field
     #[structopt(long, value_name = "uri")]
@@ -56,6 +69,14 @@ pub struct Config {
     /// The address server want to listen
     #[structopt(long, value_name = "address", default_value = "0.0.0.0:8000")]
     pub listen: SocketAddr,
+
+    /// Number of cache fetch threads
+    #[structopt(long, default_value = "8")]
+    pub worker: usize,
+
+    /// Maximum number of tasks waiting
+    #[structopt(long, default_value = "65536")]
+    pub tasks: usize,
 }
 
 pub fn init() -> GenResult<()> {
@@ -83,20 +104,36 @@ pub fn init() -> GenResult<()> {
 
 pub async fn download_view(context: tide::Context<()>) -> EndpointResult {
     let name: String = context.param("name").client_err()?;
-    let version: semver::Version = context.param("version").client_err()?;
+    let version: String = context.param("version").client_err()?;
 
-    let url = format!(
-        "https://static-crates-io.proxy.ustclug.org/crates/{name}/{name}-{version}.crate",
-        name = name,
-        version = version
-    );
+    let ident = &CrateIdentity { name, version };
+    let checksum = match crate::index::query(&ident).await {
+        Ok(Some(checksum)) => checksum,
+        Ok(None) => return Ok(StatusCode::NOT_FOUND.into_response()),
+        Err(error) => {
+            error!("query index failed for {}: {:?}", ident, error);
+            return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        }
+    };
 
-    let response = http::response::Builder::new()
-        .status(StatusCode::TEMPORARY_REDIRECT)
-        .header(header::LOCATION, url)
-        .body(http_service::Body::empty())
-        .server_err()?;
-    Ok(response)
+    if let Some(data) = crate::cache::query(&checksum) {
+        http::response::Builder::new()
+            .status(StatusCode::OK)
+            .body(http_service::Body::from(&*data))
+            .server_err()
+    } else {
+        let CrateIdentity { name, version } = ident.clone();
+        fetch_cache(CrateMetadata {
+            name,
+            version,
+            checksum,
+        });
+        http::response::Builder::new()
+            .status(StatusCode::TEMPORARY_REDIRECT)
+            .header(header::LOCATION, ident.upstream_url())
+            .body(http_service::Body::empty())
+            .server_err()
+    }
 }
 
 pub fn main() -> GenResult<()> {
