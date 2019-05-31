@@ -81,11 +81,11 @@ pub struct Config {
 
 pub fn init() -> GenResult<()> {
     flexi_logger::Logger::with_env_or_str("actix_web=debug,info")
-        .format(|w, record| {
+        .format(|w, now, record| {
             write!(
                 w,
                 "[{}] {} [{}:{}] {}",
-                chrono::Local::now().to_rfc3339(),
+                now.now().to_rfc3339(),
                 record.level(),
                 record.module_path().unwrap_or("<unnamed>"),
                 record

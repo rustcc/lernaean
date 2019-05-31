@@ -13,6 +13,7 @@ impl std::fmt::Display for CrateIdentity {
 }
 
 fn upstream_url(name: &str, version: &str) -> String {
+    // TODO read from 'upstream' argument
     format!(
         "https://static.crates.io/crates/{name}/{name}-{version}.crate",
         name = name,

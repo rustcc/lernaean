@@ -104,6 +104,16 @@ fn init_index(index: &Path, upstream: &str, origin: &str, dl: &Uri) -> GenResult
 
     Command::new("git")
         .current_dir(index)
+        .args(&["config", "--local", "user.email", "dcjanus@dcjanus.com"])
+        .checked_call()?;
+
+    Command::new("git")
+        .current_dir(index)
+        .args(&["config", "--local", "user.name", "DCjanus"])
+        .checked_call()?;
+
+    Command::new("git")
+        .current_dir(index)
         .arg("commit")
         .arg("--all")
         .arg("--message")
