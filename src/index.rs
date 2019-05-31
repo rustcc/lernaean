@@ -20,13 +20,14 @@ pub async fn query(ident: &CrateIdentity) -> GenResult<Option<[u8; 32]>> {
     if let Some(checksum) = CRATE_CACHE.lock().await.get(ident) {
         return Ok(Some(*checksum));
     }
+    let crate_name = ident.name.to_lowercase();
 
-    let rel_path = match ident.name.len() {
+    let rel_path = match crate_name.len() {
         0 => unreachable!(),
-        1 => format!("1/{}", ident.name),
-        2 => format!("2/{}", ident.name),
-        3 => format!("3/{}/{}", &ident.name[..1], ident.name),
-        _ => format!("{}/{}/{}", &ident.name[..2], &ident.name[2..4], ident.name),
+        1 => format!("1/{}", crate_name),
+        2 => format!("2/{}", crate_name),
+        3 => format!("3/{}/{}", &crate_name[..1], crate_name),
+        _ => format!("{}/{}/{}", &crate_name[..2], &crate_name[2..4], crate_name),
     };
     let full_path = GLOBAL_CONFIG.index.join(rel_path);
     let content: Vec<u8> = Compat01As03::new(tokio_fs::read(full_path)).await?;
@@ -34,7 +35,7 @@ pub async fn query(ident: &CrateIdentity) -> GenResult<Option<[u8; 32]>> {
 
     for line in text.lines() {
         let meta = serde_json::from_str::<CrateMetadata>(line)?;
-        debug_assert_eq!(ident.name, meta.name);
+        debug_assert_eq!(crate_name, meta.name);
         if meta.version == ident.version {
             CRATE_CACHE
                 .lock()
