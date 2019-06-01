@@ -91,8 +91,9 @@ fn cache_fetch_worker(from_manager: Receiver<CrateMetadata>, to_manager: Sender<
 
         if let Err(error) = inner(&task) {
             error!("fetch cache failed: {:?}", error);
+        } else {
+            info!("cache fetch done: {}", task);
         }
-        info!("cache fetch done: {}", task);
         to_manager.send(task).unwrap();
     }
 }
