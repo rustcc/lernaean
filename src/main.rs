@@ -9,7 +9,7 @@ extern crate failure;
 
 use crate::{
     cache::fetch_cache,
-    crates::{CrateIdentity, CrateMetadata},
+    crates::{upstream_url, CrateIdentity, CrateMetadata},
     errors::GenResult,
 };
 use http::{header, StatusCode, Uri};
@@ -17,15 +17,15 @@ use std::{net::SocketAddr, path::PathBuf};
 use structopt::StructOpt;
 use tide::{error::ResultExt, middleware::RootLogger, response::IntoResponse, EndpointResult};
 
-pub mod cache;
-pub mod crates;
-pub mod errors;
-pub mod index;
-pub mod magic;
-pub mod utils;
+mod cache;
+mod crates;
+mod errors;
+mod index;
+mod magic;
+mod utils;
 
 lazy_static! {
-    pub static ref GLOBAL_CONFIG: Config = Config::from_args();
+    static ref GLOBAL_CONFIG: Config = Config::from_args();
 }
 
 /// A simple crates.io mirror implement
@@ -33,7 +33,7 @@ lazy_static! {
 #[structopt(
     after_help = "Read more: https://doc.rust-lang.org/cargo/reference/registries.html#index-format"
 )]
-pub struct Config {
+struct Config {
     /// Crates.io local index path
     #[structopt(long, value_name = "path", default_value = "./cache/crates.io-index")]
     pub index: PathBuf,
@@ -42,15 +42,23 @@ pub struct Config {
     #[structopt(long, value_name = "path", default_value = "./cache/crates.sled")]
     pub files: PathBuf,
 
-    /// Upstream index url
+    /// Upstream registry index url
     #[structopt(
         long,
         value_name = "uri",
         default_value = "https://github.com/rust-lang/crates.io-index.git"
     )]
-    pub upstream: String,
+    pub upstream_index: String,
 
-    /// Downstream index url
+    /// Upstream registry dl url, see https://doc.rust-lang.org/cargo/reference/registries.html#index-format, but named parameters are required
+    #[structopt(
+        long,
+        value_name = "url",
+        default_value = "https://crates.io/api/v1/crates/{crate}/{version}/download"
+    )]
+    pub upstream_dl: String,
+
+    /// Downstream registry index url
     #[structopt(long, value_name = "uri")]
     pub origin: String,
 
@@ -79,7 +87,7 @@ pub struct Config {
     pub tasks: usize,
 }
 
-pub fn init() -> GenResult<()> {
+fn init() -> GenResult<()> {
     flexi_logger::Logger::with_env_or_str("actix_web=debug,info")
         .format(|w, now, record| {
             write!(
@@ -97,12 +105,16 @@ pub fn init() -> GenResult<()> {
         })
         .start()?;
 
+    lazy_static::initialize(&GLOBAL_CONFIG);
+
+    crate::crates::init()?;
+
     crate::index::init()?;
 
     Ok(())
 }
 
-pub async fn download_view(context: tide::Context<()>) -> EndpointResult {
+async fn download_view(context: tide::Context<()>) -> EndpointResult {
     let name: String = context.param("name").client_err()?;
     let version: String = context.param("version").client_err()?;
 
@@ -130,13 +142,13 @@ pub async fn download_view(context: tide::Context<()>) -> EndpointResult {
         });
         http::response::Builder::new()
             .status(StatusCode::TEMPORARY_REDIRECT)
-            .header(header::LOCATION, ident.upstream_url())
+            .header(header::LOCATION, upstream_url(&ident.name, &ident.version))
             .body(http_service::Body::empty())
             .server_err()
     }
 }
 
-pub fn main() -> GenResult<()> {
+fn main() -> GenResult<()> {
     self::init()?;
 
     let mut app = tide::App::new(());

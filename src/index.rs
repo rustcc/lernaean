@@ -54,13 +54,13 @@ pub async fn query(ident: &CrateIdentity) -> GenResult<Option<[u8; 32]>> {
 pub fn init() -> GenResult<()> {
     let crate::Config {
         index,
-        upstream,
+        upstream_index,
         origin,
         dl,
         ..
     } = &*GLOBAL_CONFIG;
 
-    init_index(index, upstream, origin, dl)?;
+    init_index(index, upstream_index, origin, dl)?;
 
     std::thread::spawn(move || loop {
         if let Err(error) = pull_from_upstream(index) {
@@ -98,10 +98,10 @@ fn init_index(index: &Path, upstream: &str, origin: &str, dl: &Uri) -> GenResult
         .checked_call()?;
 
     let config_path = &index.join("config.json");
-    let config = &file::get_text(config_path)?;
+    let config = &std::fs::read_to_string(config_path)?;
     let mut doc = serde_json::from_str::<serde_json::Value>(config)?;
     doc["dl"] = serde_json::Value::String(dl.to_string());
-    file::put_text(config_path, serde_json::to_string_pretty(&doc)?)?;
+    std::fs::write(config_path, serde_json::to_string_pretty(&doc)?)?;
 
     Command::new("git")
         .current_dir(index)

@@ -1,4 +1,8 @@
-use crate::{crates::CrateMetadata, errors::GenResult, GLOBAL_CONFIG};
+use crate::{
+    crates::{upstream_url, CrateMetadata},
+    errors::GenResult,
+    GLOBAL_CONFIG,
+};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use reqwest::Client;
 use sled::{IVec, Tree};
@@ -66,7 +70,9 @@ pub fn fetch_cache(meta: CrateMetadata) {
 /// Regardless of success or failure, the processed tasks will be transmitted from the 'to_manager'.
 fn cache_fetch_worker(from_manager: Receiver<CrateMetadata>, to_manager: Sender<CrateMetadata>) {
     fn inner(task: &CrateMetadata) -> GenResult<()> {
-        let mut response = CLIENT.get(&task.upstream_url()).send()?;
+        let mut response = CLIENT
+            .get(&upstream_url(&task.name, &task.version))
+            .send()?;
         let mut buffer = Vec::with_capacity(1024 * 200);
         response.copy_to(&mut buffer)?;
 
