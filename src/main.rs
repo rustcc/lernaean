@@ -14,13 +14,13 @@ use crate::{
 use http::{StatusCode, Uri};
 use std::{net::SocketAddr, path::PathBuf};
 use structopt::StructOpt;
-use tide::{error::ResultExt, middleware::RootLogger, response::IntoResponse, EndpointResult};
+use tide::{error::ResultExt, response::IntoResponse, EndpointResult};
 
 mod cache;
 mod crates;
 mod errors;
 mod index;
-mod magic;
+mod logger;
 mod pubsub;
 mod utils;
 
@@ -119,13 +119,9 @@ async fn download_view(context: tide::Context<()>) -> EndpointResult {
     let version: String = context.param("version").client_err()?;
 
     let ident = CrateIdentity { name, version };
-    let checksum = match crate::index::query(&ident).await {
-        Ok(Some(checksum)) => checksum,
-        Ok(None) => return Ok(StatusCode::NOT_FOUND.into_response()),
-        Err(error) => {
-            error!("query index failed for {}: {:?}", ident, error);
-            return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-        }
+    let checksum = match crate::index::query(&ident) {
+        Some(checksum) => checksum,
+        None => return Ok(StatusCode::NOT_FOUND.into_response()),
     };
 
     let CrateIdentity { name, version } = ident;
@@ -153,7 +149,7 @@ fn main() -> GenResult<()> {
     self::init()?;
 
     let mut app = tide::App::new(());
-    app.middleware(RootLogger::new());
+    app.middleware(crate::logger::Logger);
     app.at("/api/v1/crates/:name/:version/download")
         .get(download_view);
     app.serve(GLOBAL_CONFIG.listen)?;

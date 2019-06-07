@@ -1,54 +1,64 @@
 use crate::{
     crates::{CrateIdentity, CrateMetadata},
     errors::GenResult,
-    magic::INDEX_QUERY_CACHE_SIZE,
     utils::CommandExt,
     GLOBAL_CONFIG,
 };
-use futures::{compat::Compat01As03, lock::Mutex};
 use http::Uri;
-use lru::LruCache;
-use std::{path::Path, process::Command, time::Duration};
+use std::{
+    collections::HashMap,
+    path::Path,
+    process::Command,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 lazy_static! {
-    static ref CRATE_CACHE: Mutex<LruCache<CrateIdentity, [u8; 32]>> =
-        Mutex::new(LruCache::new(INDEX_QUERY_CACHE_SIZE));
+    pub static ref CRATES: Arc<RwLock<HashMap<CrateIdentity, [u8; 32]>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 }
 
-#[allow(clippy::needless_lifetimes)] // see: https://github.com/rust-lang/rust-clippy/issues/3988
-pub async fn query(ident: &CrateIdentity) -> GenResult<Option<[u8; 32]>> {
-    if let Some(checksum) = CRATE_CACHE.lock().await.get(ident) {
-        return Ok(Some(*checksum));
-    }
-    let crate_name = ident.name.to_lowercase();
+pub fn query(ident: &CrateIdentity) -> Option<[u8; 32]> {
+    CRATES.read().unwrap().get(ident).copied()
+}
 
-    let rel_path = match crate_name.len() {
-        0 => unreachable!(),
-        1 => format!("1/{}", crate_name),
-        2 => format!("2/{}", crate_name),
-        3 => format!("3/{}/{}", &crate_name[..1], crate_name),
-        _ => format!("{}/{}/{}", &crate_name[..2], &crate_name[2..4], crate_name),
-    };
-    let full_path = GLOBAL_CONFIG.index.join(rel_path);
-    let content: Vec<u8> = Compat01As03::new(tokio_fs::read(full_path)).await?;
-    let text = String::from_utf8(content)?;
+fn fresh_crates_map() -> GenResult<()> {
+    let mut result = vec![];
 
-    for line in text.lines() {
-        let meta = serde_json::from_str::<CrateMetadata>(line)?;
-        debug_assert_eq!(crate_name, meta.name);
-        if meta.version == ident.version {
-            CRATE_CACHE
-                .lock()
-                .await
-                .put(ident.to_owned(), meta.checksum);
-            return Ok(Some(meta.checksum));
+    for i in walkdir::WalkDir::new(&GLOBAL_CONFIG.index)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|entry| !entry.file_name().to_str().unwrap().contains('.'))
+        .filter(|x| {
+            x.as_ref()
+                .map(|dir_entry| dir_entry.file_type().is_file())
+                .unwrap_or(false)
+        })
+    {
+        let dir_entry = i?;
+
+        for i in std::fs::read_to_string(dir_entry.path())?
+            .lines()
+            .map(|line| serde_json::from_str::<CrateMetadata>(line))
+        {
+            let meta = i?;
+            let CrateMetadata {
+                name,
+                version,
+                checksum,
+            } = meta;
+
+            let ident = CrateIdentity { name, version };
+            result.push((ident, checksum));
         }
     }
-    Err(format_err!(
-        "no such crate found: {}-{}",
-        ident.name,
-        ident.version
-    ))
+
+    let mut crates = CRATES.write().unwrap();
+    for (ident, checksum) in result {
+        crates.insert(ident, checksum);
+    }
+
+    Ok(())
 }
 
 pub fn init() -> GenResult<()> {
@@ -61,15 +71,19 @@ pub fn init() -> GenResult<()> {
     } = &*GLOBAL_CONFIG;
 
     init_index(index, upstream_index, origin, dl)?;
+    fresh_crates_map()?;
 
     std::thread::spawn(move || loop {
         if let Err(error) = pull_from_upstream(index) {
             error!("pull index failed: {:?}", error);
         } else if let Err(error) = push_to_origin(index) {
             error!("push index failed: {:?}", error);
+        } else if let Err(error) = fresh_crates_map() {
+            error!("fresh crates failed: {:?}", error);
         } else {
             info!("update index succeeded");
         }
+
         std::thread::sleep(Duration::from_secs(GLOBAL_CONFIG.interval))
     });
 
