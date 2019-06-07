@@ -8,11 +8,10 @@ extern crate log;
 extern crate failure;
 
 use crate::{
-    cache::fetch_cache,
-    crates::{upstream_url, CrateIdentity, CrateMetadata},
+    crates::{CrateIdentity, CrateMetadata},
     errors::GenResult,
 };
-use http::{header, StatusCode, Uri};
+use http::{StatusCode, Uri};
 use std::{net::SocketAddr, path::PathBuf};
 use structopt::StructOpt;
 use tide::{error::ResultExt, middleware::RootLogger, response::IntoResponse, EndpointResult};
@@ -22,6 +21,7 @@ mod crates;
 mod errors;
 mod index;
 mod magic;
+mod pubsub;
 mod utils;
 
 lazy_static! {
@@ -118,7 +118,7 @@ async fn download_view(context: tide::Context<()>) -> EndpointResult {
     let name: String = context.param("name").client_err()?;
     let version: String = context.param("version").client_err()?;
 
-    let ident = &CrateIdentity { name, version };
+    let ident = CrateIdentity { name, version };
     let checksum = match crate::index::query(&ident).await {
         Ok(Some(checksum)) => checksum,
         Ok(None) => return Ok(StatusCode::NOT_FOUND.into_response()),
@@ -128,23 +128,24 @@ async fn download_view(context: tide::Context<()>) -> EndpointResult {
         }
     };
 
-    if let Some(data) = crate::cache::query(&checksum) {
-        http::response::Builder::new()
+    let CrateIdentity { name, version } = ident;
+    let meta = CrateMetadata {
+        name,
+        version,
+        checksum,
+    };
+    match crate::cache::get(meta).await {
+        Ok(data) => http::response::Builder::new()
             .status(StatusCode::OK)
             .body(http_service::Body::from(&*data))
-            .server_err()
-    } else {
-        let CrateIdentity { name, version } = ident.clone();
-        fetch_cache(CrateMetadata {
-            name,
-            version,
-            checksum,
-        });
-        http::response::Builder::new()
-            .status(StatusCode::TEMPORARY_REDIRECT)
-            .header(header::LOCATION, upstream_url(&ident.name, &ident.version))
-            .body(http_service::Body::empty())
-            .server_err()
+            .server_err(),
+        Err(error) => {
+            error!("{}", error);
+            http::response::Builder::new()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body("unexpected error".into())
+                .server_err()
+        }
     }
 }
 

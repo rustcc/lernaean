@@ -1,40 +1,32 @@
 use crate::{
     crates::{upstream_url, CrateMetadata},
     errors::GenResult,
+    pubsub::{Publisher, Subscriber},
     GLOBAL_CONFIG,
 };
 use crossbeam_channel::{bounded, Receiver, Sender};
 use reqwest::Client;
 use sled::{IVec, Tree};
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     sync::{Arc, Mutex},
 };
 
 // XXX Too many global variables
 lazy_static! {
-    static ref TASK_SET: Arc<Mutex<HashSet<CrateMetadata>>> =
-        Arc::new(Mutex::new(HashSet::with_capacity(GLOBAL_CONFIG.tasks)));
-    static ref TASK_SENDER: Sender<CrateMetadata> = {
-        let (to_workers, from_manager) = bounded(GLOBAL_CONFIG.tasks);
-        let (to_manager, from_workers) = bounded(GLOBAL_CONFIG.tasks);
+    static ref TASKS: Arc<Mutex<HashMap<CrateMetadata, Subscriber>>> =
+        Arc::new(Mutex::new(HashMap::with_capacity(GLOBAL_CONFIG.tasks)));
+    static ref TASK_SENDER: Sender<(CrateMetadata, Publisher)> = {
+        let (sender, receiver) = bounded(GLOBAL_CONFIG.tasks);
 
-        for _ in 0..GLOBAL_CONFIG.worker {
-            let (from_manager, to_manager) = (from_manager.clone(), to_manager.clone());
+        for id in 0..GLOBAL_CONFIG.worker {
+            let receiver = receiver.clone();
             std::thread::spawn(move || {
-                cache_fetch_worker(from_manager.clone(), to_manager.clone());
+                cache_fetch_worker(id, receiver);
             });
         }
 
-        std::thread::spawn(move || {
-            for task in from_workers {
-                if !TASK_SET.lock().unwrap().remove(&task) {
-                    warn!("unexpected!")
-                }
-            }
-        });
-
-        to_workers
+        sender
     };
     static ref TREE: Arc<Tree> = sled::Db::start_default(&GLOBAL_CONFIG.files)
         .unwrap()
@@ -43,8 +35,23 @@ lazy_static! {
     static ref CLIENT: Client = Client::new();
 }
 
+pub async fn get(meta: CrateMetadata) -> GenResult<IVec> {
+    let checksum = meta.checksum;
+    if let Some(data) = query(&checksum) {
+        return Ok(data);
+    }
+
+    fetch_cache(meta)?.await;
+
+    if let Some(data) = query(&checksum) {
+        return Ok(data);
+    } else {
+        return Err(format_err!("unexpected"));
+    }
+}
+
 /// Query local cache
-pub fn query(checksum: &[u8; 32]) -> Option<IVec> {
+fn query(checksum: &[u8; 32]) -> Option<IVec> {
     match TREE.get(checksum) {
         Ok(x) => x,
         Err(error) => {
@@ -55,20 +62,26 @@ pub fn query(checksum: &[u8; 32]) -> Option<IVec> {
 }
 
 /// Create task to fetch cache
-pub fn fetch_cache(meta: CrateMetadata) {
-    let mut tasks = TASK_SET.lock().unwrap();
+fn fetch_cache(meta: CrateMetadata) -> GenResult<Subscriber> {
+    let mut tasks = TASKS.lock().unwrap();
     if tasks.len() >= GLOBAL_CONFIG.tasks {
-        warn!("too many tasks are waiting");
-        return;
+        return Err(format_err!("too many tasks are waiting"));
     }
-    if tasks.insert(meta.clone()) {
-        TASK_SENDER.send(meta).unwrap();
-    }
+
+    let subscriber = tasks
+        .entry(meta.clone())
+        .or_insert_with(|| {
+            let (publisher, subscriber) = crate::pubsub::new_pair();
+            TASK_SENDER.send((meta, publisher)).unwrap();
+            subscriber
+        })
+        .clone();
+
+    Ok(subscriber)
 }
 
-/// This function receive tasks from 'from_manager', download and put data to cache.
-/// Regardless of success or failure, the processed tasks will be transmitted from the 'to_manager'.
-fn cache_fetch_worker(from_manager: Receiver<CrateMetadata>, to_manager: Sender<CrateMetadata>) {
+/// This function receive tasks from 'tasks', download and put data to cache.
+fn cache_fetch_worker(id: usize, tasks: Receiver<(CrateMetadata, Publisher)>) {
     fn inner(task: &CrateMetadata) -> GenResult<()> {
         let mut response = CLIENT
             .get(&upstream_url(&task.name, &task.version))
@@ -89,17 +102,28 @@ fn cache_fetch_worker(from_manager: Receiver<CrateMetadata>, to_manager: Sender<
         }
         Ok(())
     }
-    for task in from_manager {
+
+    for (task, publisher) in tasks {
         if query(&task.checksum).is_some() {
             info!("skip cache fetch: {}", task);
             continue;
         }
 
+        let begin = std::time::Instant::now();
+
         if let Err(error) = inner(&task) {
-            error!("fetch cache failed: {:?}", error);
+            error!(
+                "{:?}@{} fetch cache failed: {:?}",
+                begin.elapsed(),
+                id,
+                error
+            );
         } else {
-            info!("cache fetch done: {}", task);
+            info!("{:?}@{} fetch cache done: {}", begin.elapsed(), id, task);
         }
-        to_manager.send(task).unwrap();
+        publisher.finish();
+        if TASKS.lock().unwrap().remove(&task).is_none() {
+            warn!("unexpected!");
+        }
     }
 }
