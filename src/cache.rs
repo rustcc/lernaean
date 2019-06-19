@@ -2,11 +2,12 @@ use crate::{
     crates::{upstream_url, CrateMetadata},
     errors::GenResult,
     pubsub::{Publisher, Subscriber},
+    utils::BytesSize,
     GLOBAL_CONFIG,
 };
 use crossbeam_channel::{bounded, Receiver, Sender};
 use reqwest::Client;
-use sled::{IVec, Tree};
+use sled::{ConfigBuilder, IVec, Tree};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -28,10 +29,17 @@ lazy_static! {
 
         sender
     };
-    static ref TREE: Arc<Tree> = sled::Db::start_default(&GLOBAL_CONFIG.files)
-        .unwrap()
-        .open_tree("files")
-        .unwrap();
+    static ref TREE: Arc<Tree> = sled::Db::start(
+        ConfigBuilder::default()
+            .path(&GLOBAL_CONFIG.files)
+            .flush_every_ms(Some(1000 * 10))
+            .use_compression(true)
+            .compression_factor(19)
+            .build(),
+    )
+    .unwrap()
+    .open_tree("files")
+    .unwrap();
     static ref CLIENT: Client = Client::new();
 }
 
@@ -82,7 +90,7 @@ fn fetch_cache(meta: CrateMetadata) -> GenResult<Subscriber> {
 
 /// This function receive tasks from 'tasks', download and put data to cache.
 fn cache_fetch_worker(id: usize, tasks: Receiver<(CrateMetadata, Publisher)>) {
-    fn inner(task: &CrateMetadata) -> GenResult<()> {
+    fn inner(task: &CrateMetadata) -> GenResult<usize> {
         let mut response = CLIENT
             .get(&upstream_url(&task.name, &task.version))
             .send()?;
@@ -100,7 +108,7 @@ fn cache_fetch_worker(id: usize, tasks: Receiver<(CrateMetadata, Publisher)>) {
         if TREE.set(&task.checksum, &buffer[..])?.is_some() {
             warn!("unexpected cache replace for {}", task);
         }
-        Ok(())
+        Ok(buffer.len())
     }
 
     for (task, publisher) in tasks {
@@ -111,15 +119,21 @@ fn cache_fetch_worker(id: usize, tasks: Receiver<(CrateMetadata, Publisher)>) {
 
         let begin = std::time::Instant::now();
 
-        if let Err(error) = inner(&task) {
-            error!(
-                "{:?}@{} fetch cache failed: {:?}",
+        match inner(&task) {
+            Ok(size) => info!(
+                "{}/{:?} fetch cache done: {}",
+                BytesSize(size),
                 begin.elapsed(),
-                id,
-                error
-            );
-        } else {
-            info!("{:?}@{} fetch cache done: {}", begin.elapsed(), id, task);
+                task
+            ),
+            Err(error) => {
+                error!(
+                    "{:?}@{} fetch cache failed: {:?}",
+                    begin.elapsed(),
+                    id,
+                    error
+                );
+            }
         }
         publisher.finish();
         if TASKS.lock().unwrap().remove(&task).is_none() {
