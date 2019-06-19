@@ -4,26 +4,21 @@ use crate::{
     utils::CommandExt,
     GLOBAL_CONFIG,
 };
+use arc_swap::ArcSwap;
 use http::Uri;
-use std::{
-    collections::HashMap,
-    path::Path,
-    process::Command,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{collections::HashMap, path::Path, process::Command, sync::Arc, time::Duration};
 
 lazy_static! {
-    pub static ref CRATES: Arc<RwLock<HashMap<CrateIdentity, [u8; 32]>>> =
-        Arc::new(RwLock::new(HashMap::new()));
+    pub static ref CRATES: ArcSwap<HashMap<CrateIdentity, [u8; 32]>> =
+        ArcSwap::from(Arc::new(HashMap::new()));
 }
 
 pub fn query(ident: &CrateIdentity) -> Option<[u8; 32]> {
-    CRATES.read().unwrap().get(ident).copied()
+    CRATES.load().get(ident).copied()
 }
 
 fn fresh_crates_map() -> GenResult<()> {
-    let mut result = vec![];
+    let mut result = HashMap::new();
 
     for i in walkdir::WalkDir::new(&GLOBAL_CONFIG.index)
         .min_depth(1)
@@ -49,14 +44,11 @@ fn fresh_crates_map() -> GenResult<()> {
             } = meta;
 
             let ident = CrateIdentity { name, version };
-            result.push((ident, checksum));
+            result.insert(ident, checksum);
         }
     }
 
-    let mut crates = CRATES.write().unwrap();
-    for (ident, checksum) in result {
-        crates.insert(ident, checksum);
-    }
+    CRATES.store(Arc::new(result));
 
     Ok(())
 }
