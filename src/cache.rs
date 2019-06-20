@@ -1,16 +1,19 @@
 use crate::{
-    crates::{upstream_url, CrateMetadata},
+    crates::{upstream_url, CrateIdentity, CrateMetadata},
     errors::GenResult,
     pubsub::{Publisher, Subscriber},
     utils::BytesSize,
     GLOBAL_CONFIG,
 };
 use crossbeam_channel::{bounded, Receiver, Sender};
+use futures::compat::Future01CompatExt;
 use reqwest::Client;
 use sled::{IVec, Tree};
 use std::{
+    cmp::max,
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 // XXX Too many global variables
@@ -34,6 +37,58 @@ lazy_static! {
         .open_tree("files")
         .unwrap();
     static ref CLIENT: Client = Client::new();
+}
+
+pub fn init() -> GenResult<()> {
+    // XXX Bad code
+    std::thread::spawn(|| {
+        tokio::run(futures::compat::Compat::new(futures::FutureExt::boxed(
+            async move { pre_fetcher().await },
+        )));
+    });
+
+    Ok(())
+}
+
+async fn pre_fetcher() -> std::result::Result<(), ()> {
+    let success_interval = match GLOBAL_CONFIG.prefetch_interval {
+        None => {
+            return Ok(());
+        }
+        Some(millis) => Duration::from_millis(millis),
+    };
+    let failed_interval = max(
+        Duration::from_secs(GLOBAL_CONFIG.interval.get()),
+        success_interval,
+    );
+
+    loop {
+        let crates = crate::index::CRATES.load();
+        let meta = match crates
+            .iter()
+            .find(|(_, checksum)| query(checksum).is_none())
+        {
+            None => {
+                info!("no prefetch target found, sleep: {:?}", failed_interval);
+                tokio_timer::sleep(failed_interval).compat().await.unwrap();
+                continue;
+            }
+            Some((CrateIdentity { name, version }, checksum)) => CrateMetadata {
+                name: name.clone(),
+                version: version.clone(),
+                checksum: *checksum,
+            },
+        };
+        match get(meta.clone()).await {
+            Ok(_) => {
+                tokio_timer::sleep(success_interval).compat().await.unwrap();
+            }
+            Err(error) => {
+                error!("prefetch fail: {:?}", error);
+                tokio_timer::sleep(failed_interval).compat().await.unwrap();
+            }
+        };
+    }
 }
 
 pub async fn get(meta: CrateMetadata) -> GenResult<IVec> {

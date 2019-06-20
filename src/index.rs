@@ -76,7 +76,7 @@ pub fn init() -> GenResult<()> {
             info!("update index succeeded");
         }
 
-        std::thread::sleep(Duration::from_secs(GLOBAL_CONFIG.interval))
+        std::thread::sleep(Duration::from_secs(GLOBAL_CONFIG.interval.get()))
     });
 
     Ok(())

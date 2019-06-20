@@ -12,7 +12,7 @@ use crate::{
     errors::GenResult,
 };
 use http::{StatusCode, Uri};
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, num::NonZeroU64, path::PathBuf};
 use structopt::StructOpt;
 use tide::{error::ResultExt, response::IntoResponse, EndpointResult};
 
@@ -72,7 +72,7 @@ struct Config {
 
     /// Index update interval in seconds
     #[structopt(long, value_name = "seconds", default_value = "600")]
-    pub interval: u64,
+    pub interval: NonZeroU64,
 
     /// The address server want to listen
     #[structopt(long, value_name = "address", default_value = "0.0.0.0:8000")]
@@ -85,6 +85,10 @@ struct Config {
     /// Maximum number of tasks waiting
     #[structopt(long, default_value = "65536")]
     pub tasks: usize,
+
+    /// Interval of prefetch
+    #[structopt(long, value_name = "millis")]
+    pub prefetch_interval: Option<u64>,
 }
 
 fn init() -> GenResult<()> {
@@ -110,6 +114,8 @@ fn init() -> GenResult<()> {
     crate::crates::init()?;
 
     crate::index::init()?;
+
+    crate::cache::init()?;
 
     Ok(())
 }
