@@ -51,43 +51,46 @@ pub fn init() -> GenResult<()> {
 }
 
 async fn pre_fetcher() -> std::result::Result<(), ()> {
-    let success_interval = match GLOBAL_CONFIG.prefetch_interval {
+    let interval = match GLOBAL_CONFIG.prefetch_interval {
         None => {
             return Ok(());
         }
         Some(millis) => Duration::from_millis(millis),
     };
-    let failed_interval = max(
-        Duration::from_secs(GLOBAL_CONFIG.interval.get()),
-        success_interval,
-    );
+    let big_interval = max(Duration::from_secs(GLOBAL_CONFIG.interval.get()), interval);
+
+    let mut fail_count = 0u32;
 
     loop {
         let crates = crate::index::CRATES.load();
-        let meta = match crates
+        let metas = crates
             .iter()
-            .find(|(_, checksum)| query(checksum).is_none())
-        {
-            None => {
-                info!("no prefetch target found, sleep: {:?}", failed_interval);
-                tokio_timer::sleep(failed_interval).compat().await.unwrap();
-                continue;
-            }
-            Some((CrateIdentity { name, version }, checksum)) => CrateMetadata {
-                name: name.clone(),
-                version: version.clone(),
-                checksum: *checksum,
-            },
-        };
-        match get(meta.clone()).await {
-            Ok(_) => {
-                tokio_timer::sleep(success_interval).compat().await.unwrap();
-            }
-            Err(error) => {
-                error!("prefetch fail: {:?}", error);
-                tokio_timer::sleep(failed_interval).compat().await.unwrap();
-            }
-        };
+            .filter(|(_, checksum)| query(checksum).is_none())
+            .map(
+                |(CrateIdentity { name, version }, checksum)| CrateMetadata {
+                    name: name.clone(),
+                    version: version.clone(),
+                    checksum: *checksum,
+                },
+            );
+
+        for meta in metas {
+            match get(meta.clone()).await {
+                Ok(_) => {
+                    fail_count = 0;
+                }
+                Err(error) => {
+                    error!("prefetch fail: {:?}", error);
+                    fail_count += 1;
+                    if fail_count > 10 {
+                        break;
+                    }
+                }
+            };
+            tokio_timer::sleep(interval).compat().await.unwrap();
+        }
+        info!("prefetch sleep {:?}", big_interval);
+        tokio_timer::sleep(big_interval).compat().await.unwrap();
     }
 }
 
