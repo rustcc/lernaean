@@ -36,7 +36,6 @@ lazy_static! {
         .unwrap()
         .open_tree("files")
         .unwrap();
-    static ref CLIENT: Client = Client::new();
 }
 
 pub fn init() -> GenResult<()> {
@@ -141,6 +140,14 @@ fn fetch_cache(meta: CrateMetadata) -> GenResult<Subscriber> {
 
 /// This function receive tasks from 'tasks', download and put data to cache.
 fn cache_fetch_worker(id: usize, tasks: Receiver<(CrateMetadata, Publisher)>) {
+    lazy_static! {
+        // The crate file is gzip file, and some response from static.crates.io might contain header `content-encoding: gzip`,
+        // for example: 'https://static.crates.io/crates/google-discovery1/google-discovery1-0.1.5+00000000.crate'.
+        // Default `reqwest::Client` decompress it, which means that we got the extracted crate file,
+        // so we should turn off auto gzip decompression
+        static ref CLIENT: Client = Client::builder().gzip(false).build().unwrap();
+    }
+
     fn inner(task: &CrateMetadata) -> GenResult<usize> {
         let mut response = CLIENT
             .get(&upstream_url(&task.name, &task.version))
