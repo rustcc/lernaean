@@ -145,6 +145,7 @@ fn cache_fetch_worker(id: usize, tasks: Receiver<(CrateMetadata, Publisher)>) {
         // for example: 'https://static.crates.io/crates/google-discovery1/google-discovery1-0.1.5+00000000.crate'.
         // Default `reqwest::Client` decompress it, which means that we got the extracted crate file,
         // so we should turn off auto gzip decompression
+        // see: https://github.com/rust-lang/crates.io/issues/1179
         static ref CLIENT: Client = Client::builder().gzip(false).build().unwrap();
     }
 
