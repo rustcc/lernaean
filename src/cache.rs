@@ -102,9 +102,9 @@ pub async fn get(meta: CrateMetadata) -> GenResult<IVec> {
     fetch_cache(meta)?.await;
 
     if let Some(data) = query(&checksum) {
-        return Ok(data);
+        Ok(data)
     } else {
-        return Err(format_err!("unexpected"));
+        Err(format_err!("unexpected"))
     }
 }
 
