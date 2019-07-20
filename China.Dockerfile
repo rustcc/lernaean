@@ -2,6 +2,7 @@ FROM rust:latest as builder
 
 USER root
 WORKDIR /workdir
+COPY ./cargo_config.toml $CARGO_HOME/config
 COPY . .
 
 RUN cargo build --release

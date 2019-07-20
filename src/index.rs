@@ -4,53 +4,30 @@ use crate::{
     utils::CommandExt,
     GLOBAL_CONFIG,
 };
-use arc_swap::ArcSwap;
 use http::Uri;
-use std::{collections::HashMap, path::Path, process::Command, sync::Arc, time::Duration};
+use std::{path::Path, process::Command, time::Duration};
 
-lazy_static! {
-    pub static ref CRATES: ArcSwap<HashMap<CrateIdentity, [u8; 32]>> =
-        ArcSwap::from(Arc::new(HashMap::new()));
-}
-
+// from crate name and version to checksum
 pub fn query(ident: &CrateIdentity) -> Option<[u8; 32]> {
-    CRATES.load().get(ident).copied()
-}
+    let raw_path = match ident.name.len() {
+        0 => return None,
+        1 => format!("1/{}", ident.name),
+        2 => format!("2/{}", ident.name),
+        3 => format!("3/{}/{}", &ident.name[..1], ident.name),
+        _ => format!("{}/{}/{}", &ident.name[..2], &ident.name[2..4], ident.name),
+    };
 
-fn fresh_crates_map() -> GenResult<()> {
-    let mut result = HashMap::new();
-
-    for i in walkdir::WalkDir::new(&GLOBAL_CONFIG.index)
-        .min_depth(1)
-        .into_iter()
-        .filter_entry(|entry| !entry.file_name().to_str().unwrap().contains('.'))
-        .filter(|x| {
-            x.as_ref()
-                .map(|dir_entry| dir_entry.file_type().is_file())
-                .unwrap_or(false)
-        })
-    {
-        let dir_entry = i?;
-
-        for i in std::fs::read_to_string(dir_entry.path())?
-            .lines()
-            .map(|line| serde_json::from_str::<CrateMetadata>(line))
-        {
-            let meta = i?;
-            let CrateMetadata {
-                name,
-                version,
-                checksum,
-            } = meta;
-
-            let ident = CrateIdentity { name, version };
-            result.insert(ident, checksum);
-        }
+    let real_path = GLOBAL_CONFIG.index.join(raw_path);
+    if !real_path.exists() {
+        return None;
     }
 
-    CRATES.store(Arc::new(result));
-
-    Ok(())
+    std::fs::read_to_string(real_path)
+        .ok()?
+        .lines()
+        .filter_map(|x| serde_json::from_str::<CrateMetadata>(x).ok())
+        .find(|x: &CrateMetadata| x.version == ident.version)
+        .map(|x| x.checksum)
 }
 
 pub fn init() -> GenResult<()> {
@@ -63,15 +40,12 @@ pub fn init() -> GenResult<()> {
     } = &*GLOBAL_CONFIG;
 
     init_index(index, upstream_index, origin, dl)?;
-    fresh_crates_map()?;
 
     std::thread::spawn(move || loop {
         if let Err(error) = pull_from_upstream(index) {
             error!("pull index failed: {:?}", error);
         } else if let Err(error) = push_to_origin(index) {
             error!("push index failed: {:?}", error);
-        } else if let Err(error) = fresh_crates_map() {
-            error!("fresh crates failed: {:?}", error);
         } else {
             info!("update index succeeded");
         }
