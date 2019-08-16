@@ -1,5 +1,7 @@
 FROM rust:latest as builder
 
+ENV RUSTUP_DIST_SERVER=https://mirrors.tuna.tsinghua.edu.cn/rustup
+
 USER root
 WORKDIR /workdir
 COPY ./cargo_config.toml $CARGO_HOME/config
