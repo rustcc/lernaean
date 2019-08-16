@@ -9,12 +9,14 @@ use std::{path::Path, process::Command, time::Duration};
 
 // from crate name and version to checksum
 pub fn query(ident: &CrateIdentity) -> Option<[u8; 32]> {
-    let raw_path = match ident.name.len() {
+    let name = ident.name.to_lowercase();
+
+    let raw_path = match name.len() {
         0 => return None,
-        1 => format!("1/{}", ident.name),
-        2 => format!("2/{}", ident.name),
-        3 => format!("3/{}/{}", &ident.name[..1], ident.name),
-        _ => format!("{}/{}/{}", &ident.name[..2], &ident.name[2..4], ident.name),
+        1 => format!("1/{}", name),
+        2 => format!("2/{}", name),
+        3 => format!("3/{}/{}", &name[..1], name),
+        _ => format!("{}/{}/{}", &name[..2], &name[2..4], name),
     };
 
     let real_path = GLOBAL_CONFIG.index.join(raw_path);
